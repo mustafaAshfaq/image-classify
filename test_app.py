@@ -1,3 +1,5 @@
+import base64
+from io import BytesIO
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -6,6 +8,7 @@ import gradio as gr
 import torch
 from PIL import Image
 
+import app as caption_app
 from classification import describe_image, format_detections, get_detector
 
 
@@ -82,6 +85,52 @@ class ImageDetailsTests(unittest.TestCase):
             detection_processor.post_process_object_detection.call_args.kwargs,
             {"threshold": 0.45, "target_sizes": [(80, 100)]},
         )
+
+
+class AppDataUrlTests(unittest.TestCase):
+    @staticmethod
+    def _make_data_url(color: str = "blue") -> str:
+        buf = BytesIO()
+        Image.new("RGBA", (16, 12), color).save(buf, format="PNG")
+        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+
+    @patch("app.get_captioner")
+    def test_describe_image_with_data_url_input(self, caption_loader):
+        processor = MagicMock()
+        processor.return_value.to.return_value = {}
+        processor.decode.return_value = "A blue square."
+        model = MagicMock()
+        model.generate.return_value = [[1]]
+        caption_loader.return_value = processor, model, "cpu"
+
+        result = caption_app.describe_image(None, self._make_data_url())
+        self.assertEqual(result, "A blue square.")
+        passed_image = processor.call_args.kwargs["images"]
+        self.assertEqual(passed_image.mode, "RGB")
+        self.assertEqual(passed_image.size, (16, 12))
+
+    @patch("app.get_captioner")
+    def test_describe_image_with_direct_data_url_string(self, caption_loader):
+        processor = MagicMock()
+        processor.return_value.to.return_value = {}
+        processor.decode.return_value = "A green square."
+        model = MagicMock()
+        model.generate.return_value = [[1]]
+        caption_loader.return_value = processor, model, "cpu"
+
+        result = caption_app.describe_image(self._make_data_url("green"))
+        self.assertEqual(result, "A green square.")
+
+    def test_describe_image_rejects_invalid_data_url(self):
+        for invalid in ["https://example.com/img.png", "data:text/plain;base64,aGVsbG8=", "data:image/png;base64,not-base64"]:
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(gr.Error):
+                    caption_app.describe_image(None, invalid)
+
+    def test_describe_image_requires_image_or_data_url(self):
+        with self.assertRaises(gr.Error):
+            caption_app.describe_image(None, "   ")
 
 
 if __name__ == "__main__":
